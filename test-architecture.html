@@ -1,0 +1,304 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8" />
+<title>Mein Deutsch — Tests architecture (Étape 1)</title>
+<style>
+  body { font-family: monospace; background:#111; color:#ddd; padding:20px; font-size:14px; }
+  .pass { color:#7CD992; }
+  .fail { color:#E8746B; font-weight:bold; }
+  h1 { color:#fff; font-size:18px; }
+  .summary { margin-top:20px; padding:12px; border:1px solid #444; }
+</style>
+</head>
+<body>
+<h1>Mein Deutsch — Vérification de l'architecture technique (Étape 1)</h1>
+<div id="out"></div>
+
+<script src="../js/core/constants.js"></script>
+<script src="../js/core/storage.js"></script>
+<script src="../js/core/srs.js"></script>
+<script src="../js/core/progression.js"></script>
+<script src="../js/core/stats.js"></script>
+<script src="../js/core/backup.js"></script>
+<script src="../js/core/router.js"></script>
+
+<script src="../js/models/profil.model.js"></script>
+<script src="../js/models/vocabulaire.model.js"></script>
+<script src="../js/models/expressions.model.js"></script>
+<script src="../js/models/phrasesModeles.model.js"></script>
+<script src="../js/models/grammaire.model.js"></script>
+<script src="../js/models/conjugaison.model.js"></script>
+<script src="../js/models/phonetique.model.js"></script>
+<script src="../js/models/hoeren.model.js"></script>
+<script src="../js/models/lesen.model.js"></script>
+<script src="../js/models/schreiben.model.js"></script>
+<script src="../js/models/sprechen.model.js"></script>
+<script src="../js/models/bibliothequeDialogues.model.js"></script>
+<script src="../js/models/examens.model.js"></script>
+<script src="../js/models/pflege.model.js"></script>
+<script src="../js/models/vivreEnAllemagne.model.js"></script>
+<script src="../js/models/revision.model.js"></script>
+<script src="../js/models/dictionnairePersonnel.model.js"></script>
+<script src="../js/models/carnetVerbes.model.js"></script>
+<script src="../js/models/tableauDeBord.model.js"></script>
+
+<script>
+const out = document.getElementById("out");
+
+/* ------------------------------------------------------------------
+   VÉRIFICATION DE PRÉCHARGEMENT
+   Si les fichiers core/models n'ont pas pu être chargés (cause la
+   plus fréquente : le fichier a été ouvert directement depuis
+   l'intérieur du ZIP, sans extraction préalable, ou la structure de
+   dossiers a été modifiée après extraction), on affiche un message
+   de diagnostic clair au lieu de 24 exceptions "MD is not defined".
+   ------------------------------------------------------------------ */
+if (typeof MD === "undefined" || typeof MD.core === "undefined" || typeof MD.models === "undefined") {
+  document.body.innerHTML = `
+    <h1>⚠️ Le cœur technique de l'application n'a pas pu se charger</h1>
+    <div style="background:#2a1414;border:1px solid #8C4A3D;border-radius:8px;padding:16px;margin:16px 0;color:#f2caca;">
+      <p><strong>Cause la plus probable :</strong> ce fichier a été ouvert directement depuis l'intérieur de l'archive ZIP (aperçu sans extraction), ou la structure de dossiers a été modifiée après extraction.</p>
+      <p><strong>Ce fichier a besoin que ce dossier existe à côté de <code>test/</code> :</strong></p>
+      <pre style="background:#111;padding:10px;border-radius:6px;overflow-x:auto;">mein-deutsch-v2/
+├── js/
+│   ├── core/       ← doit être présent
+│   └── models/     ← doit être présent
+└── test/
+    └── test-architecture.html   ← ce fichier</pre>
+      <p><strong>Solution :</strong> extrais entièrement le fichier ZIP dans un dossier (clic droit → "Extraire tout" / "Extract All"), puis ouvre <code>test-architecture.html</code> depuis ce dossier extrait — pas depuis l'intérieur du ZIP.</p>
+    </div>
+  `;
+  throw new Error("Préchargement du namespace MD échoué — voir message affiché à l'écran.");
+}
+
+let passCount = 0, failCount = 0;
+
+function test(label, fn) {
+  try {
+    const ok = fn();
+    if (ok) { passCount++; out.innerHTML += `<div class="pass">✓ ${label}</div>`; }
+    else { failCount++; out.innerHTML += `<div class="fail">✗ ${label}</div>`; }
+  } catch (e) {
+    failCount++;
+    out.innerHTML += `<div class="fail">✗ ${label} — EXCEPTION: ${e.message}</div>`;
+  }
+}
+
+// Repart de zéro à chaque exécution de la page de test
+localStorage.clear();
+
+/* ---------- 1. Constantes ---------- */
+test("19 namespaces définis (18 modules + profil)", () => MD.ALL_MODULE_IDS.length === 19);
+test("4 niveaux dans l'ordre A1→B2", () => MD.LEVELS.join(",") === "A1,A2,B1,B2");
+test("11 modules structurés par niveau", () => MD.LEVEL_STRUCTURED_MODULES.length === 11);
+test("6 modules avec SRS (dont Pflege)", () => MD.SRS_ENABLED_MODULES.includes("pflege") && MD.SRS_ENABLED_MODULES.length === 6);
+
+/* ---------- 2. Storage : indépendance des namespaces ---------- */
+test("storage.set/get fonctionne", () => {
+  MD.core.storage.set("vocabulaire", { test: 1 });
+  return MD.core.storage.get("vocabulaire").test === 1;
+});
+test("storage : deux modules n'interfèrent jamais", () => {
+  MD.core.storage.set("vocabulaire", { valeur: "A" });
+  MD.core.storage.set("grammaire", { valeur: "B" });
+  return MD.core.storage.get("vocabulaire").valeur === "A" && MD.core.storage.get("grammaire").valeur === "B";
+});
+test("storage.getAll couvre les 19 namespaces", () => {
+  localStorage.clear();
+  MD.ALL_MODULE_IDS.forEach((id) => MD.core.storage.set(id, { id }));
+  const all = MD.core.storage.getAll();
+  return MD.ALL_MODULE_IDS.every((id) => all[id] && all[id].id === id);
+});
+
+/* ---------- 3. Les 19 modèles : création + chargement + non-duplication de clé ---------- */
+localStorage.clear();
+const modelKeys = Object.keys(MD.models);
+test("19 modèles enregistrés dans MD.models", () => modelKeys.length === 19);
+test("chaque modèle a un ID unique correspondant à MD.MODULE_IDS", () => {
+  const ids = modelKeys.map((k) => MD.models[k].ID);
+  return new Set(ids).size === ids.length && ids.every((id) => MD.ALL_MODULE_IDS.includes(id));
+});
+test("chaque modèle .load() crée un état par défaut sans erreur", () => {
+  return modelKeys.every((k) => {
+    const data = MD.models[k].load();
+    return data && data.schemaVersion === MD.SCHEMA_VERSION;
+  });
+});
+test("les 4 niveaux sont présents dans les modules structurés par niveau", () => {
+  const vocab = MD.models.vocabulaire.load();
+  return MD.LEVELS.every((l) => Array.isArray(vocab.themesParNiveau[l]));
+});
+
+/* ---------- 4. SRS ---------- */
+test("nouvelle carte SRS due aujourd'hui", () => {
+  const c = MD.core.srs.newCard();
+  return MD.core.srs.isDue(c);
+});
+test("une carte ratée revient à review courte (interval=1)", () => {
+  let c = MD.core.srs.newCard();
+  c = MD.core.srs.review(c, 2); c = MD.core.srs.review(c, 2); // deux succès
+  c = MD.core.srs.review(c, 0); // échec
+  return c.interval === 1 && c.lapses === 1;
+});
+test("une carte réussie plusieurs fois voit son intervalle grandir", () => {
+  let c = MD.core.srs.newCard();
+  for (let i = 0; i < 4; i++) c = MD.core.srs.review(c, 2);
+  return c.interval > 3;
+});
+test("srs.dueKeys ne renvoie que les cartes dues", () => {
+  const cards = {
+    due1: { ...MD.core.srs.newCard(), due: "2000-01-01" },
+    futur: { ...MD.core.srs.newCard(), due: "2999-01-01" },
+  };
+  const due = MD.core.srs.dueKeys(cards);
+  return due.includes("due1") && !due.includes("futur");
+});
+
+/* ---------- 5. Progression ---------- */
+test("niveau initial = A1", () => MD.core.progression.currentLevel({ currentLevel: "A1" }) === "A1");
+test("A2 verrouillé tant qu'on est en A1", () => !MD.core.progression.isLevelUnlocked("A2", { currentLevel: "A1" }));
+test("A1 reste accessible même après avoir avancé (jamais reverrouillé)", () => {
+  const p = { currentLevel: "B1" };
+  return MD.core.progression.isLevelUnlocked("A1", p) && MD.core.progression.isLevelCompleted("A1", p);
+});
+test("canAdvance nécessite 4 examens réussis sur 5", () => {
+  const scores4sur5 = [{passed:true},{passed:true},{passed:true},{passed:true},{passed:false}];
+  const scores3sur5 = [{passed:true},{passed:true},{passed:true},{passed:false},{passed:false}];
+  return MD.core.progression.canAdvance(scores4sur5) === true && MD.core.progression.canAdvance(scores3sur5) === false;
+});
+test("advance() fait passer A1 → A2", () => {
+  const p2 = MD.core.progression.advance({ currentLevel: "A1" });
+  return p2.currentLevel === "A2";
+});
+test("Vivre en Allemagne débloqué dès A2, pas en A1", () => {
+  return !MD.core.progression.isVivreEnAllemagneUnlocked({ currentLevel: "A1" })
+      && MD.core.progression.isVivreEnAllemagneUnlocked({ currentLevel: "A2" });
+});
+test("Pflege débloqué dès B1, pas en A2", () => {
+  return !MD.core.progression.isPflegeUnlocked({ currentLevel: "A2" })
+      && MD.core.progression.isPflegeUnlocked({ currentLevel: "B1" });
+});
+
+/* ---------- 6. Router (navigation technique) ---------- */
+test("router : goto met à jour la route courante", () => {
+  MD.core.router.goto("tableauDeBord");
+  return MD.core.router.current().screen === "tableauDeBord";
+});
+test("router : back revient à l'écran précédent", () => {
+  MD.core.router.goto("vocabulaire");
+  MD.core.router.goto("vocabulaireTheme", { theme: "famille" });
+  MD.core.router.back();
+  return MD.core.router.current().screen === "vocabulaire";
+});
+test("router : onChange notifie bien les abonnés", () => {
+  let notifie = false;
+  const unsub = MD.core.router.onChange(() => (notifie = true));
+  MD.core.router.goto("grammaire");
+  unsub();
+  return notifie === true;
+});
+
+/* ---------- 7. Statistiques (agrégation en lecture seule) ---------- */
+test("computeGlobalStats ne modifie aucun namespace", () => {
+  localStorage.clear();
+  MD.models.profil.load();
+  const before = JSON.stringify(MD.core.storage.getAll());
+  MD.core.stats.computeGlobalStats(MD.core.storage.getAll());
+  const after = JSON.stringify(MD.core.storage.getAll());
+  return before === after;
+});
+test("computeForecast renvoie un statut valide", () => {
+  const snap = MD.core.storage.getAll();
+  const f = MD.core.stats.computeForecast(snap);
+  return ["debut", "dansLesTemps", "enRetard"].includes(f.statut);
+});
+
+/* ---------- 8. Backup (export/import) ---------- */
+test("buildManifest liste bien les 19 modules", () => MD.core.backup.buildManifest().modules.length === 19);
+test("validate() rejette un fichier sans manifest", () => MD.core.backup.validate({}) !== null);
+test("validate() accepte un bundle correctement formé", () => {
+  const bundle = { manifest: MD.core.backup.buildManifest(), data: {} };
+  return MD.core.backup.validate(bundle) === null;
+});
+
+/* ---------- 9. Révision intelligente : agrégateur pur, aucune donnée propre ---------- */
+test("Révision.elementsEnAttente lit les modules SRS sans les modifier", () => {
+  localStorage.clear();
+  const vocab = MD.models.vocabulaire.load();
+  vocab.srsCards["A1::famille::derMann"] = { ...MD.core.srs.newCard(), due: "2000-01-01" };
+  MD.models.vocabulaire.save(vocab);
+  const snap = MD.core.storage.getAll();
+  const refs = MD.models.revision.elementsEnAttente(snap);
+  return refs.length === 1 && refs[0].moduleId === "vocabulaire" && refs[0].cardKey === "A1::famille::derMann";
+});
+
+/* ---------- 10. Carnet de verbes : resynchronisation en lecture seule ---------- */
+test("Carnet de verbes se resynchronise depuis Conjugaison sans le modifier", () => {
+  localStorage.clear();
+  const conj = MD.models.conjugaison.load();
+  conj.verbesParNiveau.A1.push({ id: "sein", infinitif: "sein", traduction: "être" });
+  conj.srsCards["A1::sein"] = MD.core.srs.newCard();
+  MD.models.conjugaison.save(conj);
+  const before = JSON.stringify(MD.core.storage.get("conjugaison"));
+  const snap = MD.core.storage.getAll();
+  const carnet = MD.models.carnetVerbes.resynchroniser(snap);
+  const after = JSON.stringify(MD.core.storage.get("conjugaison"));
+  return before === after && carnet.verbes["sein"] && carnet.verbes["sein"].sources[0] === "conjugaison:A1";
+});
+
+/* ---------- 11. Non-duplication : Dictionnaire personnel ↔ Vocabulaire ---------- */
+test("dictionnaire: doublon détecté, aucune carte SRS séparée créée", () => {
+  localStorage.clear();
+  const vocab = MD.models.vocabulaire.load();
+  vocab.themesParNiveau.A1.push({ id: "famille", label: "Famille", icone: "👨‍👩‍👧", mots: [
+    { id: "bruder", mot: "der Bruder", pluriel: "die Brüder", traduction: "le frère", exemple: "" }
+  ]});
+  MD.models.vocabulaire.save(vocab);
+  const dico = MD.models.dictionnairePersonnel.load();
+  const { data, doublon } = MD.models.dictionnairePersonnel.ajouterMot(
+    dico, { motAllemand: "der Bruder", traductionFr: "le frère", origine: "lecture", typeMot: "nom" }, vocab
+  );
+  return !!doublon && data.mots[0].revisionDeleguee === true && Object.keys(data.srsCards).length === 0;
+});
+test("dictionnaire: mot réellement nouveau obtient sa propre carte SRS", () => {
+  localStorage.clear();
+  const vocabVide = MD.models.vocabulaire.load();
+  const dico = MD.models.dictionnairePersonnel.load();
+  const { data, doublon } = MD.models.dictionnairePersonnel.ajouterMot(
+    dico, { motAllemand: "die Pflegekraft", traductionFr: "le/la soignant(e)", origine: "lecture", typeMot: "nom" }, vocabVide
+  );
+  return doublon === null && Object.keys(data.srsCards).length === 1;
+});
+
+/* ---------- 12. Carnet de verbes : synchronisation complète des 5 sources ---------- */
+test("carnetVerbes: fusionne Conjugaison + Lesen + Hören + Sprechen + Dictionnaire sans les modifier", () => {
+  localStorage.clear();
+  const conj = MD.models.conjugaison.load();
+  conj.verbesParNiveau.A1.push({ id: "sein", infinitif: "sein", traduction: "être" });
+  conj.srsCards["A1::sein"] = MD.core.srs.newCard();
+  MD.models.conjugaison.save(conj);
+  const lesen = MD.models.lesen.load();
+  lesen.textesParNiveau.A1.push({ id: "t1", titre: "x", texte: "x", vocabulaireCle: [], questions: [], verbesUtilises: ["gehen"] });
+  MD.models.lesen.save(lesen);
+  const hoeren = MD.models.hoeren.load();
+  hoeren.ecoutesParNiveau.A1.push({ id: "h1", titre: "x", texteAudio: "x", vitesse: "lente", questions: [], verbesUtilises: ["gehen", "kommen"] });
+  MD.models.hoeren.save(hoeren);
+  const sprechen = MD.models.sprechen.load();
+  sprechen.situationsParNiveau.A1.push({ id: "s1", situation: "x", objectif: "x", lignes: [], verbesUtilises: ["kommen"] });
+  MD.models.sprechen.save(sprechen);
+  const dico = MD.models.dictionnairePersonnel.load();
+  MD.models.dictionnairePersonnel.save({ ...dico, mots: [{ id: "perso_1", motAllemand: "machen", typeMot: "verbe", origine: "noteLibre", dateAjout: MD.core.today() }], srsCards: { perso_1: MD.core.srs.newCard() } });
+
+  const carnet = MD.models.carnetVerbes.resynchroniser(MD.core.storage.getAll());
+  return carnet.verbes["sein"] && carnet.verbes["gehen"].sources.length === 2 &&
+         carnet.verbes["kommen"].sources.length === 2 && carnet.verbes["machen"].statutMaitrise === "enCours";
+});
+
+/* ---------- Nettoyage final ---------- */
+localStorage.clear();
+
+out.innerHTML += `<div class="summary">${passCount} tests réussis / ${failCount} échoués sur ${passCount + failCount}</div>`;
+</script>
+</body>
+</html>
